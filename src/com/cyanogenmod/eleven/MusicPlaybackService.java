@@ -33,7 +33,6 @@ import android.database.MatrixCursor;
 import android.graphics.Bitmap;
 import android.media.AudioManager;
 import android.media.AudioManager.OnAudioFocusChangeListener;
-import android.media.MediaMetadataRetriever;
 import android.media.MediaMetadata;
 import android.media.MediaPlayer;
 import android.media.audiofx.AudioEffect;
@@ -52,7 +51,6 @@ import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.provider.MediaStore.Audio.AlbumColumns;
 import android.provider.MediaStore.Audio.AudioColumns;
-import android.support.v7.graphics.Palette;
 import android.text.TextUtils;
 import android.util.Log;
 
@@ -66,7 +64,7 @@ import com.cyanogenmod.eleven.provider.MusicPlaybackState;
 import com.cyanogenmod.eleven.provider.RecentStore;
 import com.cyanogenmod.eleven.provider.SongPlayCount;
 import com.cyanogenmod.eleven.service.MusicPlaybackTrack;
-import com.cyanogenmod.eleven.utils.ApolloUtils;
+import com.cyanogenmod.eleven.utils.BitmapWithColors;
 import com.cyanogenmod.eleven.utils.Lists;
 import com.cyanogenmod.eleven.utils.SrtManager;
 
@@ -496,8 +494,7 @@ public class MusicPlaybackService extends Service {
 
     // to improve perf, instead of hitting the disk cache or file cache, store the bitmaps in memory
     private String mCachedKey;
-    private Bitmap[] mCachedBitmap = new Bitmap[2];
-    private int mCachedBitmapAccentColor = 0;
+    private BitmapWithColors[] mCachedBitmapWithColors = new BitmapWithColors[2];
 
     /**
      * Image cache
@@ -1475,7 +1472,7 @@ public class MusicPlaybackService extends Service {
             mSession.setPlaybackState(new PlaybackState.Builder()
                     .setState(playState, position(), 1.0f).build());
         } else if (what.equals(META_CHANGED) || what.equals(QUEUE_CHANGED)) {
-            Bitmap albumArt = getAlbumArt(false);
+            Bitmap albumArt = getAlbumArt(false).getBitmap();
             if (albumArt != null) {
                 // RemoteControlClient wants to recycle the bitmaps thrown at it, so we need
                 // to make sure not to hand out our cache copy
@@ -1492,6 +1489,9 @@ public class MusicPlaybackService extends Service {
                     .putString(MediaMetadata.METADATA_KEY_ALBUM, getAlbumName())
                     .putString(MediaMetadata.METADATA_KEY_TITLE, getTrackName())
                     .putLong(MediaMetadata.METADATA_KEY_DURATION, duration())
+                    .putLong(MediaMetadata.METADATA_KEY_TRACK_NUMBER, getQueuePosition() + 1)
+                    .putLong(MediaMetadata.METADATA_KEY_NUM_TRACKS, getQueue().length)
+                    .putString(MediaMetadata.METADATA_KEY_GENRE, getGenreName())
                     .putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, albumArt)
                     .build());
 
@@ -1519,7 +1519,7 @@ public class MusicPlaybackService extends Service {
         Intent nowPlayingIntent = new Intent("com.cyanogenmod.eleven.AUDIO_PLAYER")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         PendingIntent clickIntent = PendingIntent.getActivity(this, 0, nowPlayingIntent, 0);
-        Bitmap artwork = getAlbumArt(false);
+        BitmapWithColors artwork = getAlbumArt(false);
 
         if (mNotificationPostTime == 0) {
             mNotificationPostTime = System.currentTimeMillis();
@@ -1527,7 +1527,7 @@ public class MusicPlaybackService extends Service {
 
         Notification.Builder builder = new Notification.Builder(this)
                 .setSmallIcon(R.drawable.ic_notification)
-                .setLargeIcon(artwork)
+                .setLargeIcon(artwork.getBitmap())
                 .setContentIntent(clickIntent)
                 .setContentTitle(getTrackName())
                 .setContentText(text)
@@ -1544,23 +1544,7 @@ public class MusicPlaybackService extends Service {
                         getString(R.string.accessibility_next),
                         retrievePlaybackAction(NEXT_ACTION));
 
-        if (mCachedBitmapAccentColor == 0 && artwork != null) {
-            // Generate a new Palette from the current artwork
-            final Palette p = Palette.generate(artwork);
-            if (p != null) {
-                // Check for dark vibrant colors, then vibrant
-                Palette.Swatch swatch = p.getDarkVibrantSwatch();
-                if (swatch == null) {
-                    swatch = p.getVibrantSwatch();
-                }
-                if (swatch != null) {
-                    mCachedBitmapAccentColor = swatch.getRgb();
-                }
-            }
-        }
-        if (mCachedBitmapAccentColor != 0) {
-            builder.setColor(mCachedBitmapAccentColor);
-        }
+        builder.setColor(artwork.getVibrantDarkColor());
 
         return builder.build();
     }
@@ -1995,6 +1979,35 @@ public class MusicPlaybackService extends Service {
                 return null;
             }
             return mCursor.getString(mCursor.getColumnIndexOrThrow(AudioColumns.TITLE));
+        }
+    }
+
+    /**
+     * Returns the genre name of song
+     *
+     * @return The current song genre name
+     */
+    public String getGenreName() {
+        synchronized (this) {
+            if (mCursor == null) {
+                return null;
+            }
+            String[] genreProjection = { MediaStore.Audio.Genres.NAME };
+            Uri genreUri = MediaStore.Audio.Genres.getContentUriForAudioId("external",
+                    (int) mPlaylist.get(mPlayPos).mId);
+            Cursor genreCursor = getContentResolver().query(genreUri, genreProjection,
+                    null, null, null);
+            if (genreCursor != null) {
+                try {
+                    if (genreCursor.moveToFirst()) {
+                        return genreCursor.getString(
+                            genreCursor.getColumnIndexOrThrow(MediaStore.Audio.Genres.NAME));
+                    }
+                } finally {
+                    genreCursor.close();
+                }
+            }
+            return null;
         }
     }
 
@@ -2648,7 +2661,7 @@ public class MusicPlaybackService extends Service {
      *                    Currently Has no impact on the artwork size if one exists
      * @return The album art for the current album.
      */
-    public Bitmap getAlbumArt(boolean smallBitmap) {
+    public BitmapWithColors getAlbumArt(boolean smallBitmap) {
         final String albumName = getAlbumName();
         final String artistName = getArtistName();
         final long albumId = getAlbumId();
@@ -2656,23 +2669,23 @@ public class MusicPlaybackService extends Service {
         final int targetIndex = smallBitmap ? 0 : 1;
 
         // if the cached key matches and we have the bitmap, return it
-        if (key.equals(mCachedKey) && mCachedBitmap[targetIndex] != null) {
-            return mCachedBitmap[targetIndex];
+        if (key.equals(mCachedKey) && mCachedBitmapWithColors[targetIndex] != null) {
+            return mCachedBitmapWithColors[targetIndex];
         }
 
         // otherwise get the artwork (or defaultartwork if none found)
-        final Bitmap bitmap = mImageFetcher.getArtwork(albumName, albumId, artistName, smallBitmap);
+        final BitmapWithColors bitmap = mImageFetcher.getArtwork(albumName,
+                albumId, artistName, smallBitmap);
 
         // if the key is different, clear the bitmaps first
         if (!key.equals(mCachedKey)) {
-            mCachedBitmap[0] = null;
-            mCachedBitmap[1] = null;
-            mCachedBitmapAccentColor = 0;
+            mCachedBitmapWithColors[0] = null;
+            mCachedBitmapWithColors[1] = null;
         }
 
         // store the new key and bitmap
         mCachedKey = key;
-        mCachedBitmap[targetIndex] = bitmap;
+        mCachedBitmapWithColors[targetIndex] = bitmap;
         return bitmap;
     }
 
