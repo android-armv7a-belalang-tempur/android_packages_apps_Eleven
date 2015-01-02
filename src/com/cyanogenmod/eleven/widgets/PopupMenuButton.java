@@ -21,6 +21,8 @@ import android.util.AttributeSet;
 import android.view.View;
 import android.widget.ImageView;
 
+import com.cyanogenmod.eleven.R;
+
 public class PopupMenuButton extends ImageView implements IPopupMenuCallback,
         View.OnClickListener {
     protected int mPosition = -1;
@@ -29,6 +31,8 @@ public class PopupMenuButton extends ImageView implements IPopupMenuCallback,
     public PopupMenuButton(Context context, AttributeSet attrs) {
         super(context, attrs);
 
+        setScaleType(ScaleType.CENTER_INSIDE);
+        setBackground(getResources().getDrawable(R.drawable.selectable_background_light));
         setOnClickListener(this);
     }
 
